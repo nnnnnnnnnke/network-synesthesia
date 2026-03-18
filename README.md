@@ -4,9 +4,9 @@ Real-time network traffic visualization and sonification. Packets become particl
 
 ## Demo
 
-[![Demo Video](demo-thumbnail.jpg)](https://github.com/nnnnnnnnnke/network-synesthesia/releases/download/v1.0.0/demo.mp4)
+[![Demo Video](demo-thumbnail.jpg)](https://github.com/nnnnnnnnnke/network-synesthesia/blob/main/demo.mp4)
 
-*Click the image to download the demo video (with sound)*
+*Click the image to watch the demo video (with sound)*
 
 ## What it does
 
