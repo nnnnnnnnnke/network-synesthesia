@@ -2,6 +2,10 @@
 
 Real-time network traffic visualization and sonification. Packets become particles of light and musical notes.
 
+## Demo
+
+<video src="https://github.com/nnnnnnnnnke/network-synesthesia/raw/master/demo.mp4" controls width="100%"></video>
+
 ## What it does
 
 - Captures live network packets via `tcpdump`
