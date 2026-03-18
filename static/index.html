@@ -1,0 +1,433 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Network Synesthesia</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#06061a;overflow:hidden;font-family:'Courier New',monospace;color:#7eb8da}
+canvas{display:block;position:fixed;top:0;left:0}
+#ui{position:fixed;top:24px;left:28px;z-index:10;pointer-events:none}
+#title{font-size:28px;font-weight:bold;color:#b0dfff;text-shadow:0 0 30px rgba(80,160,255,.4);letter-spacing:2px}
+#subtitle{font-size:11px;color:#4a7a8f;margin:4px 0 16px;letter-spacing:1px}
+#stats{font-size:13px;line-height:2}
+.sv{color:#e0f0ff}
+#legend{position:fixed;bottom:24px;left:28px;z-index:10;font-size:11px;opacity:.7}
+.li{display:flex;align-items:center;margin-bottom:5px}
+.ld{width:8px;height:8px;border-radius:50%;margin-right:8px;box-shadow:0 0 6px currentColor}
+#controls{position:fixed;top:24px;right:28px;z-index:10}
+#controls button{background:rgba(80,160,255,.08);border:1px solid rgba(80,160,255,.25);color:#7eb8da;padding:8px 18px;cursor:pointer;font-family:inherit;font-size:13px;border-radius:6px;backdrop-filter:blur(4px);transition:all .2s}
+#controls button:hover{background:rgba(80,160,255,.18);border-color:rgba(80,160,255,.5)}
+#conn{position:fixed;top:30px;right:160px;z-index:10;font-size:11px}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="ui">
+  <div id="title">Network Synesthesia</div>
+  <div id="subtitle">ネットワークを聴く — Listen to your network</div>
+  <div id="stats">
+    Packets/sec: <span class="sv" id="pps">0</span><br>
+    Total: <span class="sv" id="total">0</span><br>
+    Active Hosts: <span class="sv" id="nhosts">0</span>
+  </div>
+</div>
+<div id="legend">
+  <div class="li"><div class="ld" style="color:#4499ff"></div>HTTP/S</div>
+  <div class="li"><div class="ld" style="color:#ffcc22"></div>DNS</div>
+  <div class="li"><div class="ld" style="color:#22ff88"></div>SSH</div>
+  <div class="li"><div class="ld" style="color:#ff4455"></div>ICMP</div>
+  <div class="li"><div class="ld" style="color:#aa55ff"></div>TCP</div>
+  <div class="li"><div class="ld" style="color:#7799aa"></div>UDP/Other</div>
+</div>
+<div id="controls">
+  <button id="abtn" onclick="toggleAudio()">Sound OFF</button>
+</div>
+<div id="conn">Connecting...</div>
+
+<script>
+// ---- Config ----
+const PROTO = {
+  http: {type:'sine',     atk:.05, dec:.4,  gain:.12, color:'#4499ff'},
+  dns:  {type:'triangle', atk:.01, dec:.18, gain:.10, color:'#ffcc22'},
+  ssh:  {type:'sawtooth', atk:.02, dec:.5,  gain:.06, color:'#22ff88'},
+  icmp: {type:'square',   atk:.002,dec:.1,  gain:.05, color:'#ff4455'},
+  tcp:  {type:'sine',     atk:.03, dec:.25, gain:.08, color:'#aa55ff'},
+  udp:  {type:'triangle', atk:.02, dec:.2,  gain:.06, color:'#7799aa'},
+  arp:  {type:'sine',     atk:.01, dec:.12, gain:.04, color:'#ff9922'},
+  db:   {type:'sawtooth', atk:.03, dec:.3,  gain:.07, color:'#ff55aa'},
+};
+// Pentatonic scale across 3 octaves
+const SCALE = [
+  261.63,293.66,329.63,392.00,440.00,
+  523.25,587.33,659.25,783.99,880.00,
+  1046.50,1174.66,1318.51,1567.98,1760.00
+];
+
+// ---- State ----
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+let W, H;
+const hosts = new Map();
+const particles = [];
+const ripples = [];
+let audioCtx = null;
+let audioEnabled = false;
+let masterGain = null;
+let totalPackets = 0;
+let ppsCounter = 0;
+let ppsValue = 0;
+
+// ---- Resize ----
+function resize() {
+  W = canvas.width = window.innerWidth;
+  H = canvas.height = window.innerHeight;
+  // Reposition hosts
+  const arr = [...hosts.values()];
+  arr.forEach((h, i) => {
+    const a = (i * 2.39996323) % (Math.PI * 2);
+    const r = Math.min(W, H) * 0.33;
+    h.x = W/2 + Math.cos(a) * r;
+    h.y = H/2 + Math.sin(a) * r;
+  });
+}
+window.addEventListener('resize', resize);
+resize();
+
+// ---- Host Management ----
+function getHost(ip) {
+  if (hosts.has(ip)) {
+    const h = hosts.get(ip);
+    h.lastSeen = Date.now();
+    return h;
+  }
+  const idx = hosts.size;
+  const angle = (idx * 2.39996323) % (Math.PI * 2); // golden angle
+  const radius = Math.min(W, H) * 0.33;
+  const h = {
+    ip,
+    x: W/2 + Math.cos(angle) * radius,
+    y: H/2 + Math.sin(angle) * radius,
+    angle,
+    lastSeen: Date.now(),
+    activity: 0,
+  };
+  hosts.set(ip, h);
+  document.getElementById('nhosts').textContent = hosts.size;
+  return h;
+}
+
+// ---- Hex to RGBA ----
+function rgba(hex, a) {
+  const n = parseInt(hex.slice(1), 16);
+  return `rgba(${(n>>16)&255},${(n>>8)&255},${n&255},${a})`;
+}
+
+// ---- Particle ----
+class Particle {
+  constructor(src, dst, color, size) {
+    this.sx = src.x; this.sy = src.y;
+    this.dx = dst.x; this.dy = dst.y;
+    // Random curved control point
+    const mx = (this.sx+this.dx)/2 + (Math.random()-.5)*120;
+    const my = (this.sy+this.dy)/2 + (Math.random()-.5)*120;
+    this.cx = mx; this.cy = my;
+    this.color = color;
+    this.r = Math.min(Math.max(size/100+1.5, 1.5), 6);
+    this.t = 0;
+    this.speed = .012 + Math.random()*.018;
+    this.trail = [];
+    this.alive = true;
+  }
+  update() {
+    this.t += this.speed;
+    if (this.t >= 1) { this.alive = false; return; }
+    const t = this.t, t1 = 1-t;
+    const x = t1*t1*this.sx + 2*t1*t*this.cx + t*t*this.dx;
+    const y = t1*t1*this.sy + 2*t1*t*this.cy + t*t*this.dy;
+    this.trail.push({x, y});
+    if (this.trail.length > 25) this.trail.shift();
+  }
+  draw(ctx) {
+    const tl = this.trail.length;
+    if (!tl) return;
+    // Trail
+    ctx.beginPath();
+    ctx.moveTo(this.trail[0].x, this.trail[0].y);
+    for (let i = 1; i < tl; i++) ctx.lineTo(this.trail[i].x, this.trail[i].y);
+    ctx.strokeStyle = rgba(this.color, .3);
+    ctx.lineWidth = this.r * .8;
+    ctx.stroke();
+    // Head glow
+    const h = this.trail[tl-1];
+    const g = ctx.createRadialGradient(h.x,h.y,0,h.x,h.y,this.r*4);
+    g.addColorStop(0, rgba(this.color, .6));
+    g.addColorStop(.4, rgba(this.color, .15));
+    g.addColorStop(1, 'transparent');
+    ctx.beginPath();
+    ctx.arc(h.x,h.y,this.r*4,0,Math.PI*2);
+    ctx.fillStyle = g;
+    ctx.fill();
+    // Head core
+    ctx.beginPath();
+    ctx.arc(h.x,h.y,this.r,0,Math.PI*2);
+    ctx.fillStyle = rgba(this.color, .9);
+    ctx.fill();
+  }
+}
+
+// ---- Ripple (arrival effect) ----
+class Ripple {
+  constructor(x, y, color) {
+    this.x = x; this.y = y; this.color = color;
+    this.r = 0; this.maxR = 30 + Math.random()*20;
+    this.alpha = .5; this.alive = true;
+  }
+  update() {
+    this.r += 1.5;
+    this.alpha *= .93;
+    if (this.alpha < .01) this.alive = false;
+  }
+  draw(ctx) {
+    ctx.beginPath();
+    ctx.arc(this.x,this.y,this.r,0,Math.PI*2);
+    ctx.strokeStyle = rgba(this.color, this.alpha);
+    ctx.lineWidth = 2;
+    ctx.stroke();
+  }
+}
+
+// ---- Audio ----
+let lastNoteTime = 0;
+const MIN_NOTE_INTERVAL = 70; // ms — max ~14 notes/sec for pleasant sound
+
+function initAudio() {
+  audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  masterGain = audioCtx.createGain();
+  masterGain.gain.value = 0.6;
+
+  // Simple reverb
+  const convolver = audioCtx.createConvolver();
+  const rate = audioCtx.sampleRate;
+  const len = rate * 2;
+  const impulse = audioCtx.createBuffer(2, len, rate);
+  for (let ch = 0; ch < 2; ch++) {
+    const d = impulse.getChannelData(ch);
+    for (let i = 0; i < len; i++) {
+      d[i] = (Math.random()*2-1) * Math.pow(1 - i/len, 2.5);
+    }
+  }
+  convolver.buffer = impulse;
+
+  const wet = audioCtx.createGain();
+  wet.gain.value = 0.25;
+  const dry = audioCtx.createGain();
+  dry.gain.value = 0.75;
+
+  // masterGain -> dry -> destination
+  masterGain.connect(dry);
+  dry.connect(audioCtx.destination);
+  // masterGain -> convolver -> wet -> destination
+  masterGain.connect(convolver);
+  convolver.connect(wet);
+  wet.connect(audioCtx.destination);
+
+  console.log('Audio initialized, sampleRate:', rate);
+}
+
+function playNote(proto, size, panVal) {
+  if (!audioEnabled || !audioCtx) return;
+  const cfg = PROTO[proto] || PROTO.tcp;
+  const noteIdx = ((size * 7) % SCALE.length + SCALE.length) % SCALE.length;
+  const freq = SCALE[noteIdx];
+
+  try {
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    const pan = audioCtx.createStereoPanner();
+
+    osc.type = cfg.type;
+    osc.frequency.value = freq;
+    osc.detune.value = (Math.random() - .5) * 15;
+
+    const t = audioCtx.currentTime;
+    gain.gain.setValueAtTime(0, t);
+    gain.gain.linearRampToValueAtTime(cfg.gain, t + cfg.atk);
+    gain.gain.exponentialRampToValueAtTime(.0001, t + cfg.atk + cfg.dec);
+
+    pan.pan.value = Math.max(-1, Math.min(1, panVal || (Math.random()*2-1)));
+
+    osc.connect(gain);
+    gain.connect(pan);
+    pan.connect(masterGain);
+
+    osc.start(t);
+    osc.stop(t + cfg.atk + cfg.dec + .05);
+  } catch(e) {
+    console.error('playNote error:', e);
+  }
+}
+
+function toggleAudio() {
+  if (!audioCtx) initAudio();
+  audioEnabled = !audioEnabled;
+  if (audioEnabled && audioCtx.state === 'suspended') {
+    audioCtx.resume().then(() => console.log('AudioContext resumed'));
+  }
+  document.getElementById('abtn').textContent = audioEnabled ? 'Sound ON' : 'Sound OFF';
+  console.log('Audio:', audioEnabled, 'state:', audioCtx.state);
+}
+
+// ---- WebSocket ----
+function connect() {
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const ws = new WebSocket(`${proto}//${location.host}/ws`);
+  ws.onopen = () => {
+    document.getElementById('conn').textContent = 'Connected';
+    document.getElementById('conn').style.color = '#22ff88';
+  };
+  ws.onclose = () => {
+    document.getElementById('conn').textContent = 'Reconnecting...';
+    document.getElementById('conn').style.color = '#ff4455';
+    setTimeout(connect, 2000);
+  };
+  ws.onerror = () => ws.close();
+  ws.onmessage = (e) => {
+    const p = JSON.parse(e.data);
+    handlePacket(p);
+  };
+}
+
+// Per-protocol rate limit: particle + sound always together
+const protoLastTime = {};
+const PROTO_INTERVAL = {
+  ssh: 400,  // SSH is very chatty — max 2.5/sec
+  tcp: 180,
+  http: 120,
+  dns: 80,   // DNS is interesting, show more
+  icmp: 80,
+  udp: 180,
+  arp: 500,
+  db: 150,
+};
+
+function handlePacket(p) {
+  totalPackets++;
+  ppsCounter++;
+  document.getElementById('total').textContent = totalPackets.toLocaleString();
+
+  // Rate-limit per protocol: skip if too soon
+  const now = performance.now();
+  const interval = PROTO_INTERVAL[p.proto] || 180;
+  const last = protoLastTime[p.proto] || 0;
+  if (now - last < interval) return;
+  protoLastTime[p.proto] = now;
+
+  const cfg = PROTO[p.proto] || PROTO.tcp;
+  const srcHost = getHost(p.src);
+  const dstHost = getHost(p.dst);
+  srcHost.activity = 1;
+  dstHost.activity = 1;
+
+  // Particle + sound together (always in sync)
+  particles.push(new Particle(srcHost, dstHost, cfg.color, p.size || 64));
+  const panVal = (srcHost.x / W) * 2 - 1;
+  playNote(p.proto, p.size || 64, panVal);
+}
+
+// PPS counter
+setInterval(() => {
+  ppsValue = ppsCounter;
+  ppsCounter = 0;
+  document.getElementById('pps').textContent = ppsValue;
+}, 1000);
+
+// ---- Render ----
+function drawBackground() {
+  // Subtle gradient background
+  ctx.fillStyle = 'rgba(6,6,26,.15)';
+  ctx.fillRect(0,0,W,H);
+}
+
+function drawHosts() {
+  for (const [ip, h] of hosts) {
+    // Activity decay
+    h.activity *= .95;
+    const a = h.activity;
+    const baseR = 4;
+    const r = baseR + a * 8;
+
+    // Outer glow
+    const g = ctx.createRadialGradient(h.x,h.y,0,h.x,h.y,r*5);
+    g.addColorStop(0, rgba('#4499ff', .08 + a*.15));
+    g.addColorStop(1, 'transparent');
+    ctx.beginPath();
+    ctx.arc(h.x,h.y,r*5,0,Math.PI*2);
+    ctx.fillStyle = g;
+    ctx.fill();
+
+    // Core dot
+    ctx.beginPath();
+    ctx.arc(h.x,h.y,r,0,Math.PI*2);
+    ctx.fillStyle = rgba('#88ccff', .4 + a*.6);
+    ctx.fill();
+
+    // IP label
+    ctx.fillStyle = rgba('#6699aa', .4 + a*.4);
+    ctx.font = '10px Courier New';
+    ctx.textAlign = 'center';
+    ctx.fillText(ip, h.x, h.y + r + 14);
+  }
+}
+
+function animate() {
+  drawBackground();
+
+  // Update & draw particles
+  for (let i = particles.length - 1; i >= 0; i--) {
+    particles[i].update();
+    if (!particles[i].alive) {
+      // Spawn ripple at destination
+      const p = particles[i];
+      if (p.trail.length) {
+        const last = p.trail[p.trail.length-1];
+        ripples.push(new Ripple(last.x, last.y, p.color));
+      }
+      particles.splice(i, 1);
+    } else {
+      particles[i].draw(ctx);
+    }
+  }
+
+  // Update & draw ripples
+  for (let i = ripples.length - 1; i >= 0; i--) {
+    ripples[i].update();
+    if (!ripples[i].alive) {
+      ripples.splice(i, 1);
+    } else {
+      ripples[i].draw(ctx);
+    }
+  }
+
+  drawHosts();
+
+  // Center ambient pulse
+  const pulse = .03 + Math.sin(Date.now()/2000) * .015 + (ppsValue/100)*.02;
+  const cg = ctx.createRadialGradient(W/2,H/2,0,W/2,H/2,Math.min(W,H)*.15);
+  cg.addColorStop(0, rgba('#2255aa', pulse));
+  cg.addColorStop(1, 'transparent');
+  ctx.beginPath();
+  ctx.arc(W/2,H/2,Math.min(W,H)*.15,0,Math.PI*2);
+  ctx.fillStyle = cg;
+  ctx.fill();
+
+  requestAnimationFrame(animate);
+}
+
+// ---- Start ----
+connect();
+animate();
+</script>
+</body>
+</html>
