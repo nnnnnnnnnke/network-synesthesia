@@ -4,7 +4,7 @@ Real-time network traffic visualization and sonification. Packets become particl
 
 ## Demo
 
-[![Demo Video](demo-thumbnail.jpg)](https://github.com/nnnnnnnnnke/network-synesthesia/blob/main/demo.mp4)
+[![Demo Video](demo-thumbnail.jpg)](https://nnnnnnnnnke.github.io/network-synesthesia/demo.html)
 
 *Click the image to watch the demo video (with sound)*
 
@@ -92,7 +92,7 @@ sudo systemctl enable --now traffic-gen.service
 
 ## デモ
 
-[![デモ動画](demo-thumbnail.jpg)](https://github.com/nnnnnnnnnke/network-synesthesia/blob/main/demo.mp4)
+[![デモ動画](demo-thumbnail.jpg)](https://nnnnnnnnnke.github.io/network-synesthesia/demo.html)
 
 *画像をクリックしてデモ動画を再生（音声あり）*
 
